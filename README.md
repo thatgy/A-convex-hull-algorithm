@@ -28,7 +28,7 @@ The key encoding uses native IEEE-754 bit transformations for `float`/`double`, 
 
 The key width must include exponent, sign, and mantissa information. We do **not** infer precision from the largest decimal number (a tiny fractional difference can require hundreds of significant bits). Rather, we determine representational width from `numeric_limits<Real>::digits` and detect **which digits actually vary** over this input. This preserves stable sorting and numeric order.
 
-For fixed precision `B`, digit size `d`, and fixed worker count, sorting costs `O(n * ceil(B/d))` and the hull retains the earlier fixed-width linear-time operation bound. If precision `B` grows with `n`, the complexity contains that factor—it is **not** uniform `O(n)` for arbitrarily growing precision.
+For fixed precision `B`, digit size `d`, and fixed worker count, sorting costs `O(n * ceil(B/d))` and the hull retains the earlier fixed-width linear-time operation bound. 
 
 `radixStats()` reports the **last radix call per local worker**, not every call cumulatively. Workers handling fewer than three points may report zero passes because no radix call was needed.
 
@@ -110,13 +110,8 @@ Supported Python `real=` modes: `"double"`, `"extended"` (C++ `long double`, Num
 
 `radix_bits=0` automatically selects the digit width, while `detect_radix_digits=True` additionally skips uniform digits. `sort_values` returns original 32-bit index positions, not rearranged floating-point objects.
 
-## Correctness testing
-
-- Existing 12 Python regression tests: passed.
-- Native 32/64/80/128/256/**512**-bit radix tests: passed for ascending/descending signed values, ties, stable ordering, and digit sizes `0,1,3,7,8,11,16` with detection enabled/disabled.
-- Python stable-sort and hull comparisons across all four Python Real modes, digit sizes `0,8,11,16`, and SciPy reference on 8,000 random points: passed.
-- A `1 + 10^-34` coordinate difference survives in the 128-bit Python path, and a `1 + 10^-60` difference survives in the 256-bit path.
-- Previously reported geometric limitations remain: native orientation is floating-point rather than adaptive exact geometry. Digit selection does not resolve near-collinear roundoff or input precision already lost before parsing.
+## Important note
+- Due to the nature of floating point arithmaric, a `1 + 10^-34` coordinate difference survives in the 128-bit Python path, and a `1 + 10^-60` difference survives in the 256-bit path. Native orientation is floating-point rather than adaptive exact geometry. Digit selection does not resolve near-collinear roundoff or input precision already lost before parsing. 
 
 ## Performance and limitations
 
@@ -126,10 +121,9 @@ The Python binary128/binary256 input path currently constructs a decimal-string 
 
 ## Project contents
 
-- `hull_scalable.hpp`: all precision-specialized hull/radix logic.
+- `hull_scalable.hpp`: all precision-specialized hull/radix logic--use `hull_normal.hpp` for a slightly more user friendly interface...basically if you want more wrappers and a slightly diffferent UI, you can use it.
 - `hull_float.hpp`, `hull_double.hpp`, `hull_real.hpp`, `hull_binary.hpp`: convenience aliases.
 - `hull_c_api.cpp`, `hull_scalable.py`, `build.py`: Python bindings.
-- `baseline/`: unchanged earlier scalable source for comparison.
   
 ### Precision-scalable radial/reflex convex hull
 
@@ -385,8 +379,6 @@ auto hit = hull_exact::segmentIntersection(0,0,3,0,1,-1,2,2);
 
 - **Python import failure / missing `_hull_scalable.so` or `.dll`:** run `python build.py` in the folder containing `hull_c_api.cpp`. The binary must match your operating system, architecture, and Python wrapper's expected exported functions.
 - **Missing Boost headers during C++ compilation:** install the Boost development headers, or configure your compiler's include path to their location.
-- **No need to check in binaries:** keep source, build script, documentation, and tests on GitHub; generated `.so`, `.dll`, and `.dylib` files can go in `.gitignore`.
-- **Original indices:** the hull stores 32-bit unsigned input indices (up to `UINT32_MAX`); the coordinates use your selected `Real` type. These index arrays are not atomic.
 - **Precision:** C++ template precision adds no dynamic type-dispatch overhead, but larger `Real` values require more storage and arithmetic. Multiprecision floating point does not automatically make orientation predicates mathematically exact.
 - **Algorithmic complexity:** for fixed precision and a fixed worker count, the code uses bounded radix passes. With `k` variable workers, the multiway merge costs up to `O(H log k)` for `H` partial-hull vertices. The final-hull correctness guarantee still depends on the geometric predicates and recovery logic.
 
