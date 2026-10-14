@@ -78,8 +78,7 @@ The compile-time type parameter adds no per-point dynamic dispatch. Wider precis
 
 ## Python use
 
-Build the shared library with `python build.py`. Requirements: Python 3, NumPy, GCC/Clang with C++20, Boost.Multiprecision headers. SciPy is required **only for the supplied reference tests**, not for hull computation.
-
+Build the shared library with `python build.py`. Requirements: Python 3, NumPy, GCC/Clang with C++20, Boost.Multiprecision headers. 
 ```python
 from decimal import Decimal
 from hull_scalable import hullcomp, sort_values, precision_info
@@ -158,3 +157,236 @@ All configurations returned 31 vertices on uniform input and all one million ver
 | Binary multiprecision | 256 | 304 | 178.87 | 32 |
 
 For a fixed precision `B` and radix digit width `d`, radix sorting requires no more than `ceil(B/d)` passes, and can skip uniform digits. With fixed precision and fixed worker count the operation-count upper bound remains `O(n)`. When increasing precision with problem size, include the factor `ceil(B/d)` rather than claiming an unconditional linear-time bound. Geometric predicates are still floating-point and are not exact/adaptive.
+
+
+#Importing:Use Hull_normal for drop in support
+## Using `hull_normal` (C++ and Python)
+
+`hull_normal` is the unified interface to the scalable, parallel convex-hull algorithm. It supports configurable thread counts, radix-sort policies, original-coordinate hull iteration, and multiple numeric precisions. You do **not** have to import or include a different hull implementation for every precision.
+
+### 1. Files and requirements
+
+Keep these files together in your project:
+
+```text
+hull_normal.hpp          # Main C++ interface
+hull_scalable.hpp        # Core templated C++ algorithm
+hull_normal.py           # Main Python interface
+hull_scalable.py         # Python-to-native wrapper
+hull_c_api.cpp           # Native interface used by Python
+build.py                 # Builds the Python shared library
+hull_exact.hpp           # Optional exact segment-intersection utility
+
+# Optional convenience headers (can stay in your repository):
+hull_float.hpp
+hull_double.hpp
+hull_real.hpp
+hull_binary.hpp
+```
+
+**Requirements:** C++20 compiler, pthread support, and Boost.Multiprecision headers for C++; Python 3 and NumPy for Python usage. Boost.Multiprecision is header-only for the supported binary types. The bundled tests may also use SciPy, but SciPy is not required to run the hull algorithm.
+
+For C++, `#include "hull_normal.hpp"` automatically brings in `hull_scalable.hpp`. You do not need to include the individual `hull_double.hpp`, `hull_real.hpp`, or `hull_binary.hpp` headers as well.
+
+For Python, build the native library **in the same directory as** `hull_scalable.py`:
+
+```bash
+python -m pip install numpy
+python build.py
+```
+
+On Linux, this generates `_hull_scalable.so`; on Windows, `_hull_scalable.dll`; on macOS, `_hull_scalable.dylib`. You do not need to commit the compiled library to GitHub if users can run `build.py` themselves. The build script expects a working C++20 compiler (`g++` by default, configurable through the `CXX` environment variable).
+
+### 2. C++ — simplest example
+
+```cpp
+#include "hull_normal.hpp"
+#include <iostream>
+#include <vector>
+#include <utility>
+
+int main() {
+    using Point = hull::Point<double>;
+    std::vector<Point> points = {
+        {0,0}, {3,0}, {3,2}, {0,2}, {1,1}
+    };
+
+    hull_normal<double> H(4);       // double precision, 4 workers
+    H.set(std::move(points));       // provide original coordinates
+    H();                            // calculate the convex hull
+
+    std::cout << "Hull size: " << H.count() << '\n';
+    for (auto p : H.iter_vertices()) {
+        std::cout << p.x << ", " << p.y << '\n';
+    }
+    for (auto id : H.iter_indices()) {
+        std::cout << "Input index: " << id << '\n';
+    }
+
+    H(8);                           // recompute using 8 workers
+    return 0;
+}
+```
+
+Compile on Linux with:
+
+```bash
+g++ -std=c++20 -O3 -march=native -pthread main.cpp -o hull_demo
+./hull_demo
+```
+
+`H.indices()` also returns the full hull-index vector. `H.points()` accesses the original stored point array. Coordinates returned by the hull are **not translated around its temporary center**.
+
+### 3. C++ — precision, threads, and radix modes
+
+```cpp
+hull_normal<>                                       default_hull(4);  // double, fast
+hull_normal<float>                                  float_hull(4);
+hull_normal<double>                                 double_hull(8);
+hull_normal<long double>                            extended_hull(8);
+hull_normal<hull::binary<128>>                      high_hull(8);
+hull_normal<hull::binary<256>, hull::mode::adaptive> wide_hull(16);
+hull_normal<hull::binary<512>, hull::mode::full_radix> huge_hull(4);
+
+// Override radix settings explicitly: 11 bits/digit, skip uniform digits.
+hull_normal<double> custom_hull(8, {11, true});
+```
+
+| C++ radix mode | Behavior |
+|---|---|
+| `hull::mode::fast` (default) | 16-bit radix digits; skip uniform digits |
+| `hull::mode::adaptive` | Choose an 8-, 11-, or 16-bit digit width using a size heuristic |
+| `hull::mode::full_radix` | 16-bit radix digits; do not skip uniform digits |
+
+For all C++ precision modes, call `.set(points)` and then `.compute()` or `H()`. Use `.compute(threads)` or `H(threads)` to change the worker count; the default is four. The implementation supports up to 256 workers, although using more workers than available cores can slow execution.
+
+To preserve more than double precision when providing high-precision constants, construct values from strings, for example `hull::binary<256>("1.000000000000000000000000001")`, instead of passing a previously rounded `double`.
+
+### 4. C++ — partial hulls, endpoints, linked lists, and radix statistics
+
+```cpp
+// After H() has computed the hull:
+auto ends = H.getEndpoints(0);      // index pair for partial hull 0
+const auto& points = H.points();
+auto first = points[ends.first];    // original-coordinate Point
+auto last  = points[ends.last];
+
+auto extremes = H.getExtrema(0);    // leftmost/rightmost partial-hull IDs
+auto part_ids = H.section(0);       // indices for partial hull 0
+
+auto vertex_list = H.toPointLinkedList();
+if (vertex_list.head) {
+    auto* next = vertex_list.head->next;
+    auto* prev = vertex_list.head->prev;
+}
+
+auto index_list = H.toIndexLinkedList();
+auto stats = H.radixStats();        // one stats entry per worker
+```
+
+Both lists are **circular doubly linked lists** that own their returned values. C++ `getEndpoints(part)` returns the **first and last indices in that partial hull's current ordering**, not necessarily the correct tangent bridge for splicing with another hull.
+
+### 5. Python — simplest example
+
+```python
+import numpy as np
+from hull_normal import hull_normal, convex_hull
+
+points = np.array([
+    [0, 0], [3, 0], [3, 2], [0, 2], [1, 1]
+], dtype=np.float64)
+
+with hull_normal(points, threads=4, precision="double") as H:
+    H.compute()                   # or H()
+
+    vertices = H.vertices()       # Nx2 NumPy array of original coordinates
+    indices = H.vertex_indices()  # uint32 indices into original points
+    edges = H.getEdgeList()       # pairs of original point indices
+
+    for point in H:               # Python generator
+        print(point.x, point.y)  # fields, not x()/y() methods
+
+    for index in H.iter_indices():
+        print(index)
+
+    H.compute(8)                  # recompute with eight workers
+
+# Quick one-shot use:
+vertices = convex_hull(points, threads=4, precision="double")
+```
+
+`hull_normal.py` imports `hull_scalable.py`, which loads the compiled native library. Run Python from the project directory (or install/add the folder to `PYTHONPATH`) so it can find these modules.
+
+### 6. Python — precision and sorting modes
+
+```python
+from decimal import Decimal
+from hull_normal import hull_normal, sort_values
+
+# Extended precision (native C++ long double)
+H = hull_normal(points, threads=8, precision="extended", mode="adaptive")
+H()
+H.close()
+
+# High precision: pass decimal strings or Decimal, not float intermediates.
+precise = [
+    ["0", "0"],
+    ["1.000000000000000000000000000001", "0"],
+    ["1.000000000000000000000000000001", "1"],
+    ["0", "1"],
+]
+with hull_normal(precise, threads=4, precision="binary256") as H:
+    H()
+    print(H.vertices())           # Decimal values in a NumPy object array
+
+# Stable ascending radix sort: returns ORIGINAL positions, not sorted values.
+order = sort_values([Decimal("2"), Decimal("-1"), Decimal("2")],
+                    precision="binary128", mode="fast")
+print(order.tolist())             # [1, 0, 2]
+```
+
+Available Python `precision=` values: `"double"`, `"extended"`, `"binary128"`, and `"binary256"`. Additional C++ precisions (such as `float` or binary512) require additional native binding exports before they can be selected from Python.
+
+Use `mode="fast"`, `"adaptive"`, or `"full_radix"`. You can override the mode with `radix_bits=0` (automatic) or `1..16`, and `detect_radix_digits=True/False`. `threads="auto"` lets the Python wrapper estimate the available CPU allowance.
+
+### 7. Python — partial hulls, linked lists, and exact intersections
+
+```python
+from hull_normal import segment_intersection
+
+with hull_normal(points, threads=4) as H:
+    H()
+    a, b = H.getEndpoints(0)             # original-coordinate Point objects
+    a_id, b_id = H.getEndpoints(0, indices=True)
+    partial = H.getSectionHull(0)        # Nx2 array of section vertices
+    linked = H.toPointLinkedList()       # circular doubly linked list
+    linked_ids = H.toIndexLinkedList()
+    if linked.head:
+        print(linked.head.value, linked.head.next.value)
+    print(H.radixStats())
+
+hit = segment_intersection((0, 0), (3, 0), (1, -1), (2, 2))
+print(hit.kind)       # "point"
+print(hit.point.x)    # Fraction(4, 3), exactly
+print(hit.line1)      # point-slope line equation
+```
+
+To find intersections between two computed hulls, use `H1.intersections(H2)` while both hull objects remain open. That checks each edge pair, so it costs `O(h1*h2)` and is not intended for two giant all-extreme hulls without spatial indexing.
+
+For C++, the optional exact-segment utility is separate:
+
+```cpp
+#include "hull_exact.hpp"
+auto hit = hull_exact::segmentIntersection(0,0,3,0,1,-1,2,2);
+// hit.kind == "point", hit.points[0].x.str() == "4/3"
+```
+
+### 8. Notes and common issues
+
+- **Python import failure / missing `_hull_scalable.so` or `.dll`:** run `python build.py` in the folder containing `hull_c_api.cpp`. The binary must match your operating system, architecture, and Python wrapper's expected exported functions.
+- **Missing Boost headers during C++ compilation:** install the Boost development headers, or configure your compiler's include path to their location.
+- **No need to check in binaries:** keep source, build script, documentation, and tests on GitHub; generated `.so`, `.dll`, and `.dylib` files can go in `.gitignore`.
+- **Original indices:** the hull stores 32-bit unsigned input indices (up to `UINT32_MAX`); the coordinates use your selected `Real` type. These index arrays are not atomic.
+- **Precision:** C++ template precision adds no dynamic type-dispatch overhead, but larger `Real` values require more storage and arithmetic. Multiprecision floating point does not automatically make orientation predicates mathematically exact.
+- **Algorithmic complexity:** for fixed precision and a fixed worker count, the code uses bounded radix passes. With `k` variable workers, the multiway merge costs up to `O(H log k)` for `H` partial-hull vertices. The final-hull correctness guarantee still depends on the geometric predicates and recovery logic.
+
