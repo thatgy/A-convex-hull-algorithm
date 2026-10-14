@@ -130,10 +130,8 @@ The Python binary128/binary256 input path currently constructs a decimal-string 
 - `hull_scalable.hpp`: all precision-specialized hull/radix logic.
 - `hull_float.hpp`, `hull_double.hpp`, `hull_real.hpp`, `hull_binary.hpp`: convenience aliases.
 - `hull_c_api.cpp`, `hull_scalable.py`, `build.py`: Python bindings.
-- `test_hull.py`, `test_radix_ext.cpp`, `test_radix_python.py`: regression and new precision tests.
-- `bench_old_new.cpp`, `benchmark_dynamic.py`, `bench_precisions.cpp`: reproducible benchmarks.
 - `baseline/`: unchanged earlier scalable source for comparison.
-- `example_binary.cpp`: C++ arbitrary-precision example.
+  
 ### Precision-scalable radial/reflex convex hull
 
 The scalable implementation supports `float`, `double`, x87 `long double`, and Boost binary floating-point values with arbitrary **compile-time** mantissa precision, including 128, 256, and 512 bits. Radix keys include each type's full significand and exponent. Digit widths are configurable from 1 to 16 bits; automatic mode chooses an initial width by input size and may skip radix passes whose digits do not vary.
